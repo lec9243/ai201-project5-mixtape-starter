@@ -87,3 +87,21 @@ The "Listening Now" service treated any listen from the past 24 hours as current
 ### Your fix and side-effect check
 
 I changed `RECENT_THRESHOLD` from 24 hours to 30 minutes. This keeps genuinely recent listening events, excludes yesterday's events, and leaves `get_activity_feed` unchanged because that endpoint intentionally returns older activity. I verified the change by running the new feed regression test.
+
+## Issue #4: I got notified when a friend added my song to a playlist but not when they rated it
+
+### How you reproduced it
+
+I added `tests/test_notifications.py::test_rating_someone_elses_song_notifies_original_sharer`. The test creates a song shared by `nova`, has `darius` rate it, and then queries `Notification` rows for `nova`. Before the fix, SQLAlchemy raised `NoResultFound` because the rating was saved but no notification was created. I also added a self-rating test to confirm users do not notify themselves.
+
+### How you found the root cause
+
+I traced `POST /songs/<song_id>/rate` in `routes/songs.py` to `services.notification_service.rate_song`. Then I compared that function with the working `add_to_playlist` path in the same service. `add_to_playlist` validates the song, actor, and playlist, performs the action, then calls `create_notification` for the original sharer when another user added the song. `rate_song` validated the song and rater and saved the `Rating`, but it returned immediately after committing.
+
+### The root cause
+
+The rating workflow did not include the notification side effect. The app's architecture puts social-interaction notifications in `notification_service`, and the playlist-add interaction followed that pattern, but the rating interaction only wrote the `Rating` row. Because the route delegates all rating behavior to `rate_song`, there was no later step that could create the missing notification.
+
+### Your fix and side-effect check
+
+I added a `song_rated` notification after the rating commit when `song.shared_by != user_id`. The notification goes to the original sharer and includes the rater username, song title, and score. I checked the side effects with tests for both another-user rating, which now creates one notification, and self-rating, which still creates none.
