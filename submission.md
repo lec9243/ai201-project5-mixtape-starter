@@ -34,3 +34,21 @@ The route files are thin: they parse HTTP inputs, convert service exceptions int
 
 # Root Cause Analysis
 
+## Issue #1: My listening streak keeps resetting
+
+### How you reproduced it
+
+I reproduced this with the existing regression test `tests/test_streaks.py::test_streak_increments_on_sunday`. The test creates a user, calls `update_listening_streak` for Saturday, June 15, 2024, then calls it again for Sunday, June 16, 2024. Before the fix, the user's streak stayed at `1` instead of incrementing to `2`.
+
+### How you found the root cause
+
+I traced the listen flow from `POST /songs/<song_id>/listen` in `routes/songs.py` to `services/streak_service.record_listening_event`, then into `update_listening_streak`. The existing tests showed that first listens, same-day listens, Tuesday-after-Monday listens, and skipped-day resets all worked. The only failing case was Saturday to Sunday, which pointed directly at the branch that checked `days_since_last == 1 and today.weekday() != 6`.
+
+### The root cause
+
+`datetime.weekday()` returns `6` for Sunday, and the streak code explicitly refused to increment when `today.weekday() == 6`. That meant a legitimate consecutive-day listen from Saturday to Sunday was treated as a reset case. The actual streak rule only depends on whether the user listened exactly one calendar day after the previous listen; Sunday should not be special.
+
+### Your fix and side-effect check
+
+I changed the consecutive-day branch to check only `days_since_last == 1`. This preserves the existing behavior for first listens, same-day listens, normal consecutive days, and skipped-day resets while allowing Saturday-to-Sunday listening to increment correctly. I verified the side effects by running the streak test file after the change.
+
