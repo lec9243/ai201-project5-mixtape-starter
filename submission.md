@@ -52,3 +52,20 @@ I traced the listen flow from `POST /songs/<song_id>/listen` in `routes/songs.py
 
 I changed the consecutive-day branch to check only `days_since_last == 1`. This preserves the existing behavior for first listens, same-day listens, normal consecutive days, and skipped-day resets while allowing Saturday-to-Sunday listening to increment correctly. I verified the side effects by running the streak test file after the change.
 
+## Issue #5: The last song in a playlist never shows up
+
+### How you reproduced it
+
+I reproduced this with the existing tests in `tests/test_playlists.py`. The fixture creates a playlist with five ordered tracks. Before the fix, `test_playlist_returns_all_songs` received only four songs, and `test_playlist_returns_songs_in_order` received `Track 1` through `Track 4` but not `Track 5`.
+
+### How you found the root cause
+
+I traced `GET /playlists/<playlist_id>/songs` in `routes/playlists.py` to `services.playlist_service.get_playlist_songs`. The SQLAlchemy query joined `Song` to `playlist_entries`, filtered by the playlist ID, and ordered by `playlist_entries.position`, which was the right data access pattern. The suspicious part was after the query: the function returned `songs[:-1]`.
+
+### The root cause
+
+Python list slicing with `[:-1]` returns every element except the final one. The database query was already returning all playlist songs in the correct order, but the service dropped the last element during serialization. This affected every non-empty playlist, regardless of playlist length.
+
+### Your fix and side-effect check
+
+I changed the return statement to serialize `songs` directly instead of `songs[:-1]`. This keeps the existing query, ordering, and empty-playlist behavior unchanged while returning the complete ordered list. I verified the side effects by running the playlist tests, including the empty playlist case.
