@@ -105,3 +105,21 @@ The rating workflow did not include the notification side effect. The app's arch
 ### Your fix and side-effect check
 
 I added a `song_rated` notification after the rating commit when `song.shared_by != user_id`. The notification goes to the original sharer and includes the rater username, song title, and score. I checked the side effects with tests for both another-user rating, which now creates one notification, and self-rating, which still creates none.
+
+## Issue #3: The same song keeps showing up twice in search
+
+### How you reproduced it
+
+I used the multi-tag search fixture pattern from `tests/test_search.py`: one song titled `Crown Heights Anthem` with three tags. Running the same `outerjoin(song_tags)` shape at the SQL row level returned three rows with the same song ID. In the installed SQLAlchemy version, `db.session.query(Song).all()` collapses those duplicate entity identities, so the existing service-level duplicate test did not fail locally, but the query itself still produced the duplicate rows that explain the reported symptom.
+
+### How you found the root cause
+
+I traced `GET /songs/search?q=...` in `routes/songs.py` to `services.search_service.search_songs`. The service queried `Song`, outer-joined through the `song_tags` association table, filtered only on `Song.title` and `Song.artist`, and then serialized each song with `Song.to_dict()`. Since the filter did not use `song_tags` or `Tag`, the join was not needed for matching. Since `Song.to_dict()` reads tags through the model relationship, the join was not needed for serialization either.
+
+### The root cause
+
+The search query joined a one-to-many association table even though it only searched columns on `Song`. A song with multiple tag rows appears once per tag in the joined SQL result set. Any code path that serializes the joined rows directly, or any ORM behavior that does not uniquify entity identities, can show the same song multiple times. The duplicate-producing join was the root cause; tag serialization already came from the model relationship.
+
+### Your fix and side-effect check
+
+I removed the unnecessary `outerjoin(song_tags, ...)` and the unused `Tag`/`song_tags` imports. The query now searches `Song` rows directly by title or artist, which returns one row per song while preserving tag output through `Song.to_dict()`. I verified the side effects by running the search tests, including the existing multi-tag duplicate regression.
