@@ -69,3 +69,21 @@ Python list slicing with `[:-1]` returns every element except the final one. The
 ### Your fix and side-effect check
 
 I changed the return statement to serialize `songs` directly instead of `songs[:-1]`. This keeps the existing query, ordering, and empty-playlist behavior unchanged while returning the complete ordered list. I verified the side effects by running the playlist tests, including the empty playlist case.
+
+## Issue #2: Friends Listening Now shows people from yesterday
+
+### How you reproduced it
+
+I added `tests/test_feed.py::test_listening_now_excludes_yesterday_even_within_24_hours` to reproduce the issue. The test freezes the service clock at July 2, 2026, 12:00 UTC, creates one friend who listened 10 minutes ago and another friend who listened 16 hours ago on July 1, 2026, then calls `get_friends_listening_now`. Before the fix, both friends appeared in the "Listening Now" feed.
+
+### How you found the root cause
+
+I traced `GET /feed/<user_id>/listening-now` in `routes/feed.py` to `services.feed_service.get_friends_listening_now`. The friendship lookup, event ordering, and per-friend deduplication were correct. The value that made the old friend pass the filter was the module-level `RECENT_THRESHOLD`, which was set to `timedelta(hours=24)`.
+
+### The root cause
+
+The "Listening Now" service treated any listen from the past 24 hours as current. A 24-hour cutoff can include events from the previous calendar day, so users who were not currently listening still appeared in the real-time feed. The activity feed is the correct place for older friend events; "Listening Now" needs a much shorter recency window.
+
+### Your fix and side-effect check
+
+I changed `RECENT_THRESHOLD` from 24 hours to 30 minutes. This keeps genuinely recent listening events, excludes yesterday's events, and leaves `get_activity_feed` unchanged because that endpoint intentionally returns older activity. I verified the change by running the new feed regression test.
